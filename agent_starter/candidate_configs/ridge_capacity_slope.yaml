@@ -1,0 +1,7 @@
+name: ridge_capacity_slope
+model_kind: ridge
+max_cycle: 100
+seed: 42
+feature_include_prefixes:
+  - qd_
+  - n_cycles_used

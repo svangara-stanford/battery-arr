@@ -6,14 +6,27 @@ This is a locally runnable prototype. It demonstrates protocol generation, publi
 
 This repo is intentionally small enough to run on a MacBook, while preserving the shape of a serious ML research codebase that can later scale to NERSC: deterministic preprocessing, train/validation/test splits, feature extraction, baseline training, hidden-label evaluation, tests, and a data layout that avoids committing large raw files. Do not claim scientific performance from the random local split; credible claims require validated real-data loading plus heldout-batch/protocol transfer splits.
 
+## Prototype status for NERSC reviewers
+
+- The local deterministic demo works with `pytest` and `make demo`.
+- A real-data baseline matrix command is available: `make real-baseline-matrix` or `python scripts/run_real_data_baseline_matrix.py`.
+- No API keys are required for preprocessing, baseline training, summaries, or the non-LLM agent starter.
+- Public MatR raw data must be manually downloaded into `data/raw/chueh_toyota_fast_charge/`; raw data are not committed.
+- A hidden-evaluator-style path exists: submissions use `cell_id,y_pred`, while local demo labels are used only for proof-of-concept scoring.
+- NERSC scaffolding exists under `containers/` and `nersc/` with Slurm templates and a simple container recipe.
+- Current limitations: full-batch real-data loader validation, transfer-split scientific claims, locked-label evaluator isolation, and Perlmutter I/O optimization remain future work.
+- A paper-inspired `paper_ridge_loglife` early-prediction baseline is available, with caveats documented in `docs/scientific_baselines.md`.
+
 ## What works now
 
 - Generate the **224 valid four-step fast-charging protocols** from the Attia/Chueh closed-loop optimization setup.
 - Create a small synthetic/demo dataset so the repository is runnable before the public MatR batches are downloaded.
 - Load best-effort MATLAB/HDF5 MatR batch structs, MatR/BEEP JSON ZIP exports, and already-tabular CSVs into a normalized schema.
 - Build interpretable early-cycle tabular features from cycle summaries.
-- Train reproducible scikit-learn baseline lifetime regressors (`dummy_mean`, `ridge`, `random_forest`, `gradient_boosting`).
+- Train reproducible baseline lifetime regressors (`dummy_mean`, `ridge`, `random_forest`, `gradient_boosting`, `paper_ridge_loglife`).
 - Score predictions through an evaluator that can hide test labels.
+- Run a small real-data baseline matrix and write reviewer-facing tables under `reports/`.
+- Run a minimal non-LLM agent candidate through the candidate/evaluator pattern.
 - Run unit and smoke tests for the protocol space, data splits, features, metrics, loader, and end-to-end demo.
 
 ## Scientific target
@@ -87,6 +100,13 @@ python scripts/train_baseline.py \
   --model-kind random_forest
 ```
 
+Or run the phase-1 reviewer matrix:
+
+```bash
+make real-baseline-matrix
+python scripts/summarize_runs.py --runs-dir runs --reports-dir reports
+```
+
 ## Repository structure
 
 ```text
@@ -99,6 +119,9 @@ src/battery_aar/
   utils/         seeds and lightweight I/O helpers
 scripts/         runnable local workflows
 configs/         local baseline configuration
+agent_starter/   non-LLM candidate/evaluator smoke runner
+containers/      simple container recipe
+nersc/           Slurm template scaffolding
 tests/           unit and smoke tests
 docs/            dataset notes, prototype scope, Codex/Cursor build prompt
 external/        notes for third-party code; no large vendored code

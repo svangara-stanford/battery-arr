@@ -14,8 +14,22 @@ from sklearn.linear_model import Ridge
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
-NON_FEATURE_COLUMNS = {"cell_id", "cycle_life", "split", "protocol_readable", "batch_id"}
-SUPPORTED_MODEL_KINDS = ("dummy_mean", "ridge", "random_forest", "gradient_boosting")
+NON_FEATURE_COLUMNS = {
+    "cell_id",
+    "cycle_life",
+    "split",
+    "protocol_readable",
+    "batch_id",
+    "paper_curve_features_available",
+}
+LOG_LIFE_MODEL_KINDS = ("paper_ridge_loglife", "paper_linear_loglife")
+SUPPORTED_MODEL_KINDS = (
+    "dummy_mean",
+    "ridge",
+    "random_forest",
+    "gradient_boosting",
+    *LOG_LIFE_MODEL_KINDS,
+)
 
 
 @dataclass
@@ -25,6 +39,7 @@ class TrainedBaseline:
     model: Pipeline
     feature_columns: list[str]
     model_kind: str
+    target_transform: str = "identity"
 
 
 def select_feature_columns(features: pd.DataFrame) -> list[str]:
@@ -47,7 +62,7 @@ def make_regressor(kind: str = "random_forest", *, seed: int = 42, **kwargs: Any
     if kind == "dummy_mean":
         regressor = DummyRegressor(strategy="mean")
         steps = [("imputer", SimpleImputer(strategy="median")), ("regressor", regressor)]
-    elif kind == "ridge":
+    elif kind in {"ridge", "paper_ridge_loglife", "paper_linear_loglife"}:
         alpha = float(kwargs.get("alpha", 1.0))
         regressor = Ridge(alpha=alpha, random_state=seed)
         steps = [
@@ -83,6 +98,7 @@ def train_baseline(
     split_column: str = "split",
     model_kind: str = "random_forest",
     seed: int = 42,
+    feature_columns: list[str] | None = None,
     **model_kwargs: Any,
 ) -> TrainedBaseline:
     """Train a baseline model on rows assigned to the train split."""
@@ -94,21 +110,52 @@ def train_baseline(
     train_df = features[features[split_column] == "train"].copy()
     if train_df.empty:
         raise ValueError("no training rows found")
-    feature_columns = select_feature_columns(features)
+    feature_columns = feature_columns or select_feature_columns(features)
     if not feature_columns:
         raise ValueError("no numeric feature columns found")
+    missing_features = set(feature_columns).difference(features.columns)
+    if missing_features:
+        raise ValueError(f"requested feature columns missing: {sorted(missing_features)}")
     model = make_regressor(model_kind, seed=seed, **model_kwargs)
     X = train_df[feature_columns].apply(pd.to_numeric, errors="coerce")
     y = pd.to_numeric(train_df["cycle_life"], errors="coerce")
-    mask = y.notna()
+    target_transform = "log10_cycle_life" if model_kind in LOG_LIFE_MODEL_KINDS else "identity"
+    mask = y.notna() & (y > 0)
     if mask.sum() == 0:
         raise ValueError("no finite training labels found")
-    model.fit(X.loc[mask], y.loc[mask].to_numpy(dtype=float))
-    return TrainedBaseline(model=model, feature_columns=feature_columns, model_kind=model_kind)
+    y_train = y.loc[mask].to_numpy(dtype=float)
+    if target_transform == "log10_cycle_life":
+        y_train = np.log10(y_train)
+    model.fit(X.loc[mask], y_train)
+    return TrainedBaseline(
+        model=model,
+        feature_columns=feature_columns,
+        model_kind=model_kind,
+        target_transform=target_transform,
+    )
 
 
 def predict(trained: TrainedBaseline, features: pd.DataFrame) -> np.ndarray:
     """Generate predictions for a trained baseline."""
 
+    raw = predict_model_output(trained, features)
+    if trained.target_transform == "log10_cycle_life":
+        return np.asarray(10.0**raw, dtype=float)
+    return raw
+
+
+def predict_model_output(trained: TrainedBaseline, features: pd.DataFrame) -> np.ndarray:
+    """Generate predictions in the model target space."""
+
     X = features[trained.feature_columns].apply(pd.to_numeric, errors="coerce")
     return np.asarray(trained.model.predict(X), dtype=float)
+
+
+def predict_log10_cycle_life(trained: TrainedBaseline, features: pd.DataFrame) -> np.ndarray:
+    """Generate log10(cycle_life) predictions for log-life baselines."""
+
+    raw = predict_model_output(trained, features)
+    if trained.target_transform == "log10_cycle_life":
+        return raw
+    cycle_pred = np.asarray(raw, dtype=float)
+    return np.where(cycle_pred > 0, np.log10(cycle_pred), np.nan)
