@@ -8,7 +8,11 @@ from pathlib import Path
 
 import pandas as pd
 
-from battery_aar.data.schema import qc_summary, validate_processed_tables
+from battery_aar.data.schema import (
+    qc_summary,
+    validate_processed_tables,
+    validate_split_assignments,
+)
 from battery_aar.data.split import SplitConfig, make_split_assignments
 from battery_aar.protocols.policy_space import generate_protocol_space
 from battery_aar.protocols.simulator import simulate_cycle_life, simulate_cycle_summary
@@ -63,11 +67,12 @@ def main() -> None:
     cycle_summary = pd.concat(cycle_parts, ignore_index=True)
     validate_processed_tables(metadata, cycle_summary, require_labels=True)
     splits = make_split_assignments(metadata, SplitConfig(seed=args.seed))
+    validate_split_assignments(metadata, splits, require_train_labels=True)
 
     metadata.to_csv(out / "cell_metadata.csv", index=False)
     cycle_summary.to_csv(out / "cycle_summary.csv", index=False)
     splits.to_csv(out / "splits.csv", index=False)
-    write_json(out / "qc_summary.json", qc_summary(metadata, cycle_summary))
+    write_json(out / "qc_summary.json", qc_summary(metadata, cycle_summary, splits))
     print(f"Wrote demo dataset to {out}")
 
 

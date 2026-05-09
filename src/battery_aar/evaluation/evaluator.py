@@ -16,6 +16,12 @@ def evaluate_predictions(truth: pd.DataFrame, predictions: pd.DataFrame) -> dict
         raise ValueError(f"truth missing columns: {sorted(missing)}")
     if missing := required_pred.difference(predictions.columns):
         raise ValueError(f"predictions missing columns: {sorted(missing)}")
+    extra_pred = set(predictions.columns).difference(required_pred)
+    if extra_pred:
+        raise ValueError(
+            "predictions must contain only cell_id and y_pred; "
+            f"unexpected columns: {sorted(extra_pred)}"
+        )
     if predictions["cell_id"].duplicated().any():
         raise ValueError("predictions contain duplicate cell_id values")
     merged = truth[["cell_id", "cycle_life"]].merge(predictions[["cell_id", "y_pred"]], on="cell_id", how="left")

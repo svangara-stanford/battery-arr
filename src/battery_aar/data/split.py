@@ -10,6 +10,7 @@ import pandas as pd
 
 @dataclass(frozen=True)
 class SplitConfig:
+    mode: str = "random"
     seed: int = 42
     val_fraction: float = 0.2
     test_fraction: float = 0.2
@@ -20,9 +21,15 @@ class SplitConfig:
 def make_split_assignments(metadata: pd.DataFrame, config: SplitConfig | None = None) -> pd.DataFrame:
     """Create deterministic train/val/test assignments.
 
-    If `group_column` is provided, all cells sharing that group are assigned to
-    the same split. If `leave_one_group_value` is provided, that group becomes
-    the test split and the remaining groups are split into train/val.
+    Supported modes:
+    - `random`: random cell split for smoke tests.
+    - `batch`: group split by `batch_id`.
+    - `protocol`: group split by `protocol_readable`.
+    - `protocol_cluster`: group split by exact C-rate tuple when available.
+    - `leave_one_batch_out`: hold one batch out as the test split.
+
+    Final scientific claims should use group/transfer splits, not only the
+    random smoke-test split.
     """
 
     config = config or SplitConfig()
@@ -33,20 +40,21 @@ def make_split_assignments(metadata: pd.DataFrame, config: SplitConfig | None = 
     if config.val_fraction + config.test_fraction >= 1 and config.leave_one_group_value is None:
         raise ValueError("val_fraction + test_fraction must be < 1")
 
+    metadata = metadata.drop_duplicates("cell_id").reset_index(drop=True).copy()
+    group_column = _resolve_group_column(metadata, config)
+    if config.mode == "leave_one_batch_out" and config.leave_one_group_value is None:
+        raise ValueError("leave_one_batch_out requires leave_one_group_value")
+
     if config.leave_one_group_value is not None:
-        if not config.group_column:
-            raise ValueError("leave_one_group_value requires group_column")
-        if config.group_column not in metadata.columns:
-            raise ValueError(f"group_column {config.group_column!r} not in metadata")
-        return _leave_one_group_split(metadata, config)
+        if not group_column:
+            raise ValueError("leave_one_group_value requires a group split mode or group_column")
+        return _leave_one_group_split(metadata, config, group_column)
 
     rng = np.random.default_rng(config.seed)
-    if config.group_column:
-        if config.group_column not in metadata.columns:
-            raise ValueError(f"group_column {config.group_column!r} not in metadata")
-        units = metadata[[config.group_column]].drop_duplicates().reset_index(drop=True)
-        unit_values = units[config.group_column].to_numpy()
-        cell_units = metadata[["cell_id", config.group_column]].drop_duplicates()
+    if group_column:
+        units = metadata[[group_column]].drop_duplicates().reset_index(drop=True)
+        unit_values = units[group_column].to_numpy()
+        cell_units = metadata[["cell_id", group_column]].drop_duplicates()
     else:
         unit_values = metadata["cell_id"].drop_duplicates().to_numpy()
         cell_units = pd.DataFrame({"cell_id": unit_values, "_unit": unit_values})
@@ -67,7 +75,7 @@ def make_split_assignments(metadata: pd.DataFrame, config: SplitConfig | None = 
             return "val"
         return "train"
 
-    unit_col = config.group_column or "_unit"
+    unit_col = group_column or "_unit"
     split = cell_units.copy()
     split["split"] = split[unit_col].map(assign)
     split = split[["cell_id", "split"]].drop_duplicates().reset_index(drop=True)
@@ -75,9 +83,44 @@ def make_split_assignments(metadata: pd.DataFrame, config: SplitConfig | None = 
     return split
 
 
-def _leave_one_group_split(metadata: pd.DataFrame, config: SplitConfig) -> pd.DataFrame:
-    group_col = config.group_column
-    assert group_col is not None
+def _resolve_group_column(metadata: pd.DataFrame, config: SplitConfig) -> str | None:
+    mode = config.mode.lower()
+    if config.group_column:
+        if config.group_column not in metadata.columns:
+            raise ValueError(f"group_column {config.group_column!r} not in metadata")
+        return config.group_column
+    if mode == "random":
+        return None
+    if mode in {"batch", "leave_one_batch_out"}:
+        if "batch_id" not in metadata.columns:
+            raise ValueError("batch split mode requires metadata.batch_id")
+        return "batch_id"
+    if mode == "protocol":
+        if "protocol_readable" not in metadata.columns:
+            raise ValueError("protocol split mode requires metadata.protocol_readable")
+        return "protocol_readable"
+    if mode == "protocol_cluster":
+        return _add_protocol_cluster(metadata)
+    raise ValueError(f"unknown split mode {config.mode!r}")
+
+
+def _add_protocol_cluster(metadata: pd.DataFrame) -> str:
+    cluster_col = "_protocol_cluster"
+    if {"cc1", "cc2", "cc3", "cc4"}.issubset(metadata.columns):
+        rates = metadata[["cc1", "cc2", "cc3", "cc4"]].apply(pd.to_numeric, errors="coerce")
+        metadata[cluster_col] = rates.round(1).astype(str).agg("_".join, axis=1)
+    elif "protocol_readable" in metadata.columns:
+        metadata[cluster_col] = metadata["protocol_readable"].astype(str)
+    else:
+        raise ValueError("protocol_cluster split mode requires C-rate columns or protocol_readable")
+    return cluster_col
+
+
+def _leave_one_group_split(
+    metadata: pd.DataFrame,
+    config: SplitConfig,
+    group_col: str,
+) -> pd.DataFrame:
     test_mask = metadata[group_col].astype(str) == str(config.leave_one_group_value)
     if not test_mask.any():
         raise ValueError(f"leave-one group value {config.leave_one_group_value!r} not found")
@@ -86,6 +129,7 @@ def _leave_one_group_split(metadata: pd.DataFrame, config: SplitConfig) -> pd.Da
     val_split = make_split_assignments(
         train_val,
         SplitConfig(
+            mode="random" if group_col == "_protocol_cluster" else "batch",
             seed=config.seed,
             val_fraction=config.val_fraction,
             test_fraction=0.0,

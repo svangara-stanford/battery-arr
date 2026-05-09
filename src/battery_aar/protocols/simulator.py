@@ -7,6 +7,7 @@ and must not be used for scientific conclusions.
 
 from __future__ import annotations
 
+import hashlib
 import math
 from collections.abc import Mapping
 
@@ -61,7 +62,7 @@ def simulate_cycle_summary(
 ) -> pd.DataFrame:
     """Simulate early-cycle summary rows with degradation correlated to lifetime."""
 
-    rng = np.random.default_rng(abs(hash((cell_id, seed))) % (2**32))
+    rng = np.random.default_rng(_stable_seed(cell_id, seed))
     cycles = np.arange(1, n_cycles + 1)
     stress = protocol_stress(
         float(protocol["cc1"]), float(protocol["cc2"]), float(protocol["cc3"]), float(protocol["cc4"])
@@ -93,3 +94,8 @@ def simulate_cycle_summary(
             "charge_time": charge_time,
         }
     )
+
+
+def _stable_seed(cell_id: str, seed: int) -> int:
+    digest = hashlib.blake2b(f"{cell_id}:{seed}".encode(), digest_size=8).digest()
+    return int.from_bytes(digest, byteorder="little", signed=False) % (2**32)

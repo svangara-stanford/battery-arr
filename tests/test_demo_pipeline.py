@@ -26,6 +26,9 @@ def test_demo_pipeline_end_to_end(tmp_path: Path) -> None:
         check=True,
     )
     assert (run / "model.joblib").exists()
+    assert (run / "feature_columns.json").exists()
+    assert (run / "predictions_val.csv").exists()
+    assert (run / "predictions_test.csv").exists()
     metrics = json.loads((run / "eval_metrics.json").read_text())
     assert metrics["n"] > 0
     assert metrics["rmse"] >= 0

@@ -1,9 +1,9 @@
 #!/usr/bin/env python
-"""Evaluate a prediction submission against a truth CSV.
+"""Evaluate a prediction submission against a hidden-truth CSV.
 
 For the local demo, `truth` is stored on disk. In the future benchmark, this
 script becomes the hidden evaluator path where labels are not mounted into agent
-sandboxes.
+sandboxes. Prediction submissions must contain exactly `cell_id,y_pred`.
 """
 
 from __future__ import annotations

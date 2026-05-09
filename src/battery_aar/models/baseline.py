@@ -15,6 +15,7 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
 NON_FEATURE_COLUMNS = {"cell_id", "cycle_life", "split", "protocol_readable", "batch_id"}
+SUPPORTED_MODEL_KINDS = ("dummy_mean", "ridge", "random_forest", "gradient_boosting")
 
 
 @dataclass
@@ -72,7 +73,7 @@ def make_regressor(kind: str = "random_forest", *, seed: int = 42, **kwargs: Any
         )
         steps = [("imputer", SimpleImputer(strategy="median")), ("regressor", regressor)]
     else:
-        raise ValueError(f"Unknown model kind {kind!r}")
+        raise ValueError(f"Unknown model kind {kind!r}; expected one of {SUPPORTED_MODEL_KINDS}")
     return Pipeline(steps)
 
 

@@ -40,11 +40,16 @@ def build_early_cycle_features(
         row.update(_series_stats(qd, prefix="qd"))
         row.update(_capacity_at_cycles(group, DEFAULT_CAPACITY_CYCLES))
         row["qd_slope_all"] = _safe_slope(cycles, qd)
+        row["qd_slope_2_100"] = _window_slope(group, "discharge_capacity", 2, max_cycle)
         row["qd_slope_2_50"] = _window_slope(group, "discharge_capacity", 2, 50)
         row["qd_slope_50_100"] = _window_slope(group, "discharge_capacity", 50, max_cycle)
         row["qd_curvature_proxy"] = _sub_nan(row["qd_slope_50_100"], row["qd_slope_2_50"])
         row["qd_delta_first_last"] = _first_last_delta(qd)
         row["qd_log_abs_delta_first_last"] = _log_abs(row["qd_delta_first_last"])
+        early_qd = _value_at_or_after_cycle(group, "discharge_capacity", 2)
+        late_qd = _value_at_or_before_cycle(group, "discharge_capacity", max_cycle)
+        row["qd_fade_2_to_max_cycle"] = _sub_nan(early_qd, late_qd)
+        row["qd_log_abs_fade_2_to_max_cycle"] = _log_abs(row["qd_fade_2_to_max_cycle"])
         row["n_cycles_used"] = int(len(group))
 
         for col, prefix in [
@@ -129,6 +134,22 @@ def _window_slope(group: pd.DataFrame, col: str, start: int, end: int) -> float:
     if mask.sum() < 2:
         return float("nan")
     return _safe_slope(_numeric(group.loc[mask], "cycle_index"), _numeric(group.loc[mask], col))
+
+
+def _value_at_or_after_cycle(group: pd.DataFrame, col: str, cycle: int) -> float:
+    local = group[["cycle_index", col]].copy()
+    local["cycle_index"] = pd.to_numeric(local["cycle_index"], errors="coerce")
+    local[col] = pd.to_numeric(local[col], errors="coerce")
+    local = local.loc[(local["cycle_index"] >= cycle) & local[col].notna()].sort_values("cycle_index")
+    return float(local[col].iloc[0]) if not local.empty else float("nan")
+
+
+def _value_at_or_before_cycle(group: pd.DataFrame, col: str, cycle: int) -> float:
+    local = group[["cycle_index", col]].copy()
+    local["cycle_index"] = pd.to_numeric(local["cycle_index"], errors="coerce")
+    local[col] = pd.to_numeric(local[col], errors="coerce")
+    local = local.loc[(local["cycle_index"] <= cycle) & local[col].notna()].sort_values("cycle_index")
+    return float(local[col].iloc[-1]) if not local.empty else float("nan")
 
 
 def _safe_slope(x: np.ndarray, y: np.ndarray) -> float:
