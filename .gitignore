@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Environments
+.venv/
+.env
+.env.*
+!.env.example
+
+# Large or generated artifacts
+/data/raw/**
+/data/processed/**
+/data/demo/**
+!/data/raw/.gitkeep
+!/data/processed/.gitkeep
+!/data/demo/.gitkeep
+/runs/**
+!/runs/.gitkeep
+/reports/**
+!/reports/.gitkeep
+*.joblib
+*.pkl
+*.h5
+*.hdf5
+*.mat
+*.zip
+*.tar.gz
+
+# OS/editor
+.DS_Store
+.vscode/
+.idea/

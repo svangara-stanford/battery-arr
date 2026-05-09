@@ -1,0 +1,10 @@
+seed: 42
+max_cycle: 100
+split:
+  val_fraction: 0.2
+  test_fraction: 0.2
+  group_column: null
+model:
+  kind: random_forest
+  n_estimators: 200
+  max_depth: null
