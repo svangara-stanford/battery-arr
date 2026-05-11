@@ -55,7 +55,7 @@ def test_real_data_baseline_matrix_generates_summary(tmp_path: Path) -> None:
             str(raw),
             "--processed-dir",
             str(tmp_path / "processed"),
-            "--runs-dir",
+            "--out-root",
             str(tmp_path / "runs"),
             "--reports-dir",
             str(tmp_path / "reports"),
@@ -91,7 +91,7 @@ def test_real_data_baseline_matrix_records_split_failure(tmp_path: Path) -> None
             str(raw),
             "--processed-dir",
             str(tmp_path / "processed"),
-            "--runs-dir",
+            "--out-root",
             str(tmp_path / "runs"),
             "--reports-dir",
             str(tmp_path / "reports"),
@@ -112,3 +112,94 @@ def test_real_data_baseline_matrix_records_split_failure(tmp_path: Path) -> None
     summary = pd.read_csv(tmp_path / "reports/real_data_baseline_matrix.csv")
     assert summary.loc[0, "status"] == "failed"
     assert "requires at least 3 labeled batches" in summary.loc[0, "failure_reason"]
+
+
+def test_smoke_matrix_report_names_and_warnings(tmp_path: Path) -> None:
+    repo = Path(__file__).resolve().parents[1]
+    raw = tmp_path / "raw"
+    _write_tiny_raw(raw)
+    subprocess.run(
+        [
+            sys.executable,
+            str(repo / "scripts/run_real_data_baseline_matrix.py"),
+            "--raw-dir",
+            str(raw),
+            "--processed-dir",
+            str(tmp_path / "processed"),
+            "--out-root",
+            str(tmp_path / "runs"),
+            "--reports-dir",
+            str(tmp_path / "reports"),
+            "--model-kinds",
+            "dummy_mean",
+            "--split-modes",
+            "random",
+            "--max-cycle",
+            "5",
+            "--first-n-cycles",
+            "5",
+            "--max-cells-per-batch",
+            "2",
+            "--smoke",
+        ],
+        cwd=repo,
+        check=True,
+    )
+    assert (tmp_path / "reports/real_data_baseline_matrix_smoke.csv").exists()
+    md = (tmp_path / "reports/real_data_baseline_matrix_smoke.md").read_text()
+    assert "smoke/capped" in md
+    assert "n_test < 5" in md
+    coverage_path = tmp_path / "reports/dataset_coverage_smoke.csv"
+    assert coverage_path.exists()
+    coverage = pd.read_csv(coverage_path)
+    expected_columns = {
+        "raw_files_discovered",
+        "processed_cells",
+        "labeled_cells",
+        "unlabeled_cells",
+        "labeled_batches",
+        "cells_per_batch",
+        "labeled_cells_per_batch",
+        "protocols_per_batch",
+        "cycle_life_missing",
+        "cycle_index_min",
+        "cycle_index_max",
+        "cycle_index_count",
+        "cells_fewer_than_100_cycles",
+        "run_mode",
+        "first_n_cycles",
+        "max_cells_per_batch",
+    }
+    assert expected_columns.issubset(coverage.columns)
+
+
+def test_default_matrix_includes_paper_ridge_loglife(tmp_path: Path) -> None:
+    repo = Path(__file__).resolve().parents[1]
+    raw = tmp_path / "raw"
+    _write_tiny_raw(raw)
+    subprocess.run(
+        [
+            sys.executable,
+            str(repo / "scripts/run_real_data_baseline_matrix.py"),
+            "--raw-dir",
+            str(raw),
+            "--processed-dir",
+            str(tmp_path / "processed"),
+            "--out-root",
+            str(tmp_path / "runs"),
+            "--reports-dir",
+            str(tmp_path / "reports"),
+            "--split-modes",
+            "random",
+            "--max-cycle",
+            "5",
+            "--first-n-cycles",
+            "5",
+            "--max-cells-per-batch",
+            "0",
+        ],
+        cwd=repo,
+        check=True,
+    )
+    summary = pd.read_csv(tmp_path / "reports/real_data_baseline_matrix.csv")
+    assert "paper_ridge_loglife" in set(summary["model_kind"])

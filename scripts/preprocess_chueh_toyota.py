@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from battery_aar.data.coverage import write_dataset_coverage_reports
 from battery_aar.data.matr_io import load_raw_batches
 from battery_aar.data.schema import (
     qc_summary,
@@ -25,6 +26,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-cells-per-batch", type=int, default=None)
     parser.add_argument("--first-n-cycles", type=int, default=100)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--reports-dir", type=Path, default=Path("reports"))
+    parser.add_argument("--smoke", action="store_true")
     parser.add_argument(
         "--split-mode",
         type=str,
@@ -73,6 +76,17 @@ def main() -> None:
     loaded.cycle_summary.to_csv(out / "cycle_summary.csv", index=False)
     splits.to_csv(out / "splits.csv", index=False)
     write_json(out / "qc_summary.json", qc_summary(loaded.metadata, loaded.cycle_summary, splits))
+    write_dataset_coverage_reports(
+        metadata=loaded.metadata,
+        cycle_summary=loaded.cycle_summary,
+        reports_dir=args.reports_dir,
+        raw_dir=args.raw_dir,
+        first_n_cycles=args.first_n_cycles,
+        max_cells_per_batch=args.max_cells_per_batch,
+        smoke=args.smoke or args.max_cells_per_batch is not None,
+        parse_errors=loaded.parse_errors,
+        suffix="_smoke" if args.smoke or args.max_cells_per_batch is not None else "",
+    )
     print(f"Wrote processed dataset to {out}")
 
 

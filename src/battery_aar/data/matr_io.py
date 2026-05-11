@@ -13,6 +13,7 @@ import json
 import re
 import zipfile
 from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 from pathlib import Path
 from typing import Any
 
@@ -44,12 +45,14 @@ METADATA_FIELD_CANDIDATES = {
     "policy_readable": ("policy_readable", "protocol_readable", "protocol", "policy"),
 }
 
+
 @dataclass
 class LoadedBatch:
     """Normalized output from one or more raw batch files."""
 
     metadata: pd.DataFrame
     cycle_summary: pd.DataFrame
+    parse_errors: list[str] = dataclass_field(default_factory=list)
 
 
 def find_raw_batch_files(raw_dir: str | Path) -> list[Path]:
@@ -107,6 +110,7 @@ def load_raw_batches(
                 metadata_parts.append(loaded.metadata)
             if not loaded.cycle_summary.empty:
                 summary_parts.append(loaded.cycle_summary)
+            errors.extend(loaded.parse_errors)
         except Exception as exc:  # message is surfaced to user
             errors.append(f"{file_path}: {exc}")
 
@@ -119,6 +123,7 @@ def load_raw_batches(
     return LoadedBatch(
         metadata=ensure_columns(metadata, CELL_METADATA_COLUMNS),
         cycle_summary=ensure_columns(cycle_summary, CYCLE_SUMMARY_COLUMNS),
+        parse_errors=errors,
     )
 
 
@@ -247,6 +252,7 @@ def load_matr_json_zip(
     path = Path(path)
     metadata_rows: list[dict[str, Any]] = []
     summary_rows: list[dict[str, Any]] = []
+    errors: list[str] = []
     with zipfile.ZipFile(path) as archive:
         members = [
             name
@@ -258,20 +264,28 @@ def load_matr_json_zip(
         if max_cells is not None:
             members = members[:max_cells]
         for member in members:
-            with archive.open(member) as fh:
-                obj = json.load(fh)
-            loaded = _loaded_batch_from_matr_json_object(
-                obj,
-                source_name=Path(member).stem,
-                batch_id=path.stem,
-                first_n_cycles=first_n_cycles,
-            )
-            metadata_rows.extend(loaded.metadata.to_dict(orient="records"))
-            summary_rows.extend(loaded.cycle_summary.to_dict(orient="records"))
+            try:
+                with archive.open(member) as fh:
+                    obj = json.load(fh)
+                loaded = _loaded_batch_from_matr_json_object(
+                    obj,
+                    source_name=Path(member).stem,
+                    batch_id=path.stem,
+                    first_n_cycles=first_n_cycles,
+                )
+                metadata_rows.extend(loaded.metadata.to_dict(orient="records"))
+                summary_rows.extend(loaded.cycle_summary.to_dict(orient="records"))
+                errors.extend(loaded.parse_errors)
+            except Exception as exc:
+                errors.append(f"{path}:{member}: {exc}")
+
+    if not metadata_rows and errors:
+        raise ValueError(f"No JSON members parsed successfully. First errors: {errors[:3]}")
 
     return LoadedBatch(
         metadata=ensure_columns(pd.DataFrame(metadata_rows), CELL_METADATA_COLUMNS),
         cycle_summary=ensure_columns(pd.DataFrame(summary_rows), CYCLE_SUMMARY_COLUMNS),
+        parse_errors=errors,
     )
 
 

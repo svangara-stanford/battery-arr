@@ -7,7 +7,7 @@ from pathlib import Path
 import h5py
 import numpy as np
 
-from battery_aar.data.matr_io import load_hdf5_mat_batch, load_matr_json_zip
+from battery_aar.data.matr_io import load_hdf5_mat_batch, load_matr_json_zip, load_raw_batches
 
 
 def _write_string_dataset(h: h5py.File, name: str, text: str) -> h5py.Reference:
@@ -74,3 +74,67 @@ def test_load_matr_json_zip_beep_structure(tmp_path: Path) -> None:
     assert loaded.cycle_summary["cycle_index"].min() == 1
     assert loaded.cycle_summary["cycle_index"].max() == 10
     assert loaded.cycle_summary.loc[0, "internal_resistance"] == 0.017
+
+
+def test_load_matr_json_zip_skips_member_without_summary(tmp_path: Path) -> None:
+    path = tmp_path / "2018-08-28_oed_0.zip"
+    good = {
+        "metadata": {"barcode": "good"},
+        "protocol": r"OED\20180828-5pt6_6_4pt8_3pt574.sdu",
+        "summary": {
+            "cycle_index": [0, 1, 2],
+            "discharge_capacity": [1.0, 0.99, 0.98],
+        },
+    }
+    bad = {"metadata": {"barcode": "bad"}, "protocol": "missing_summary.sdu"}
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr("2018-08-28_oed_0_CH1_structure.json", json.dumps(good))
+        zf.writestr("2018-08-28_oed_0_CH2_structure.json", json.dumps(bad))
+
+    loaded = load_matr_json_zip(path, first_n_cycles=3)
+    assert len(loaded.metadata) == 1
+    assert loaded.metadata.loc[0, "batch_id"] == "2018-08-28_oed_0"
+    assert loaded.parse_errors
+    assert "missing top-level summary" in loaded.parse_errors[0]
+
+
+def test_load_matr_json_zip_handles_raw_data_sibling(tmp_path: Path) -> None:
+    path = tmp_path / "2018-08-28_oed_0.zip"
+    obj = {
+        "raw_data": {"unused": [[float(i)] * 5 for i in range(50)]},
+        "metadata": {"barcode": "raw_sibling"},
+        "protocol": r"OED\20180828-5pt6_6_4pt8_3pt574.sdu",
+        "summary": {
+            "cycle_index": list(range(30)),
+            "discharge_capacity": [1.0] * 15 + [0.79] * 15,
+        },
+    }
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr("2018-08-28_oed_0_CH1_structure.json", json.dumps(obj))
+
+    loaded = load_matr_json_zip(path, first_n_cycles=10)
+    assert loaded.metadata.loc[0, "cell_id"] == "2018-08-28_oed_0_raw_sibling"
+    assert loaded.metadata.loc[0, "cycle_life"] == 16
+    assert loaded.cycle_summary["cycle_index"].max() == 10
+
+
+def test_load_raw_batches_detects_multiple_zip_batch_ids_from_paths(tmp_path: Path) -> None:
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    summary = {
+        "cycle_index": [0, 1, 2],
+        "discharge_capacity": [1.0, 0.99, 0.98],
+        "charge_capacity": [1.01, 1.0, 0.99],
+    }
+    for batch_id in ("2018-08-28_oed_0", "2019-01-24_batch9"):
+        obj = {
+            "metadata": {"barcode": f"{batch_id}_barcode"},
+            "protocol": r"OED\20180828-5pt6_6_4pt8_3pt574.sdu",
+            "summary": summary,
+        }
+        with zipfile.ZipFile(raw / f"{batch_id}.zip", "w") as zf:
+            zf.writestr(f"{batch_id}_CH1_structure.json", json.dumps(obj))
+
+    loaded = load_raw_batches(raw, first_n_cycles=3)
+    assert set(loaded.metadata["batch_id"]) == {"2018-08-28_oed_0", "2019-01-24_batch9"}
+    assert loaded.cycle_summary["batch_id"].nunique() == 2

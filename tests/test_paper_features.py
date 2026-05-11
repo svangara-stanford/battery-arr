@@ -84,3 +84,33 @@ def test_paper_loglife_baseline_predicts_back_transformed_cycle_life() -> None:
     assert trained.target_transform == "log10_cycle_life"
     assert np.all(y_pred > 0)
     assert np.allclose(y_pred, 10.0**y_pred_log)
+
+
+def test_train_baseline_drops_all_missing_training_feature() -> None:
+    features = pd.DataFrame(
+        {
+            "cell_id": ["a", "b", "c"],
+            "split": ["train", "train", "test"],
+            "cycle_life": [100.0, 200.0, 300.0],
+            "usable": [1.0, 2.0, 3.0],
+            "missing_in_train": [np.nan, np.nan, 1.0],
+        }
+    )
+    trained = train_baseline(features, model_kind="ridge", seed=1)
+    assert "missing_in_train" not in trained.feature_columns
+    assert trained.dropped_feature_columns == ["missing_in_train"]
+
+
+def test_train_baseline_records_fully_all_missing_feature() -> None:
+    features = pd.DataFrame(
+        {
+            "cell_id": ["a", "b", "c"],
+            "split": ["train", "train", "test"],
+            "cycle_life": [100.0, 200.0, 300.0],
+            "usable": [1.0, 2.0, 3.0],
+            "paper_curve_min_delta_q_100_10": [np.nan, np.nan, np.nan],
+        }
+    )
+    trained = train_baseline(features, model_kind="paper_ridge_loglife", seed=1)
+    assert "paper_curve_min_delta_q_100_10" not in trained.feature_columns
+    assert trained.dropped_feature_columns == ["paper_curve_min_delta_q_100_10"]

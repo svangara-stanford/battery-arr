@@ -10,6 +10,7 @@ import joblib
 import numpy as np
 import pandas as pd
 
+from battery_aar.data.split import SplitConfig, make_split_assignments
 from battery_aar.evaluation.metrics import regression_metrics
 from battery_aar.features.early_cycle import build_early_cycle_features
 from battery_aar.features.paper_features import build_paper_features, paper_feature_documentation
@@ -30,6 +31,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-cycle", type=int, default=100)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--model-kind", type=str, default="random_forest", choices=SUPPORTED_MODEL_KINDS)
+    parser.add_argument(
+        "--split-mode",
+        type=str,
+        default="random",
+        choices=["random", "protocol", "batch", "leave_one_batch_out"],
+    )
+    parser.add_argument("--leave-one-batch-id", type=str, default=None)
     return parser.parse_args()
 
 
@@ -38,7 +46,22 @@ def main() -> None:
     out = ensure_dir(args.out)
     metadata = pd.read_csv(args.processed_dir / "cell_metadata.csv")
     cycle_summary = pd.read_csv(args.processed_dir / "cycle_summary.csv")
-    splits = pd.read_csv(args.processed_dir / "splits.csv")
+    splits = make_split_assignments(
+        metadata.loc[pd.to_numeric(metadata["cycle_life"], errors="coerce").notna()].copy(),
+        SplitConfig(
+            mode=args.split_mode,
+            seed=args.seed,
+            leave_one_group_value=args.leave_one_batch_id
+            or _default_leave_one_batch(metadata, args.split_mode),
+        ),
+    )
+    unlabeled = metadata.loc[
+        pd.to_numeric(metadata["cycle_life"], errors="coerce").isna(),
+        ["cell_id"],
+    ].copy()
+    if not unlabeled.empty:
+        unlabeled["split"] = "unlabeled"
+        splits = pd.concat([splits, unlabeled], ignore_index=True)
 
     feature_family = "paper_features" if args.model_kind in LOG_LIFE_MODEL_KINDS else "generic_early_cycle"
     if feature_family == "paper_features":
@@ -87,8 +110,20 @@ def main() -> None:
         index=False,
     )
     labeled.to_csv(out / "features.csv", index=False)
-    joblib.dump({"model": trained.model, "feature_columns": trained.feature_columns, "model_kind": trained.model_kind}, out / "model.joblib")
+    joblib.dump(
+        {
+            "model": trained.model,
+            "feature_columns": trained.feature_columns,
+            "model_kind": trained.model_kind,
+            "target_transform": trained.target_transform,
+        },
+        out / "model.joblib",
+    )
     write_json(out / "feature_columns.json", {"feature_columns": trained.feature_columns})
+    write_json(
+        out / "feature_columns_dropped.json",
+        {"dropped_feature_columns": trained.dropped_feature_columns or []},
+    )
     write_json(out / "metrics.json", metrics_by_split)
     if log_metrics_by_split:
         write_json(out / "log_metrics.json", log_metrics_by_split)
@@ -102,9 +137,11 @@ def main() -> None:
             "target_transform": trained.target_transform,
             "max_cycle": args.max_cycle,
             "seed": args.seed,
+            "split_mode": args.split_mode,
             "n_labeled_cells": int(len(labeled)),
             "split_counts": labeled["split"].value_counts().astype(int).to_dict(),
             "feature_columns": trained.feature_columns,
+            "dropped_feature_columns": trained.dropped_feature_columns or [],
             "intended_use": "local proof-of-concept baseline; not a validated scientific result",
             "data_warning": "demo data are synthetic unless processed-dir points to manually downloaded public data",
         },
@@ -126,6 +163,15 @@ def _log_metrics_by_split(features: pd.DataFrame) -> dict[str, dict[str, float]]
             group["y_pred_log10"].to_numpy(),
         )
     return metrics
+
+
+def _default_leave_one_batch(metadata: pd.DataFrame, split_mode: str) -> str | None:
+    if split_mode != "leave_one_batch_out":
+        return None
+    labeled = metadata.loc[pd.to_numeric(metadata["cycle_life"], errors="coerce").notna()]
+    if "batch_id" not in labeled or labeled["batch_id"].nunique() == 0:
+        return None
+    return str(labeled["batch_id"].astype(str).sort_values().iloc[-1])
 
 
 if __name__ == "__main__":

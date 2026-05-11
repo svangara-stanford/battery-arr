@@ -11,6 +11,11 @@ import joblib
 import numpy as np
 import pandas as pd
 
+from battery_aar.data.coverage import (
+    coverage_warnings,
+    dataset_coverage_summary,
+    write_dataset_coverage_reports,
+)
 from battery_aar.data.matr_io import load_raw_batches
 from battery_aar.data.schema import (
     qc_summary,
@@ -23,7 +28,6 @@ from battery_aar.features.early_cycle import build_early_cycle_features
 from battery_aar.features.paper_features import build_paper_features, paper_feature_documentation
 from battery_aar.models.baseline import (
     LOG_LIFE_MODEL_KINDS,
-    SUPPORTED_MODEL_KINDS,
     predict,
     predict_log10_cycle_life,
     train_baseline,
@@ -31,6 +35,13 @@ from battery_aar.models.baseline import (
 from battery_aar.utils.io import ensure_dir, write_json
 
 DEFAULT_SPLIT_MODES = ("random", "batch", "protocol", "leave_one_batch_out")
+DEFAULT_MODEL_KINDS = (
+    "dummy_mean",
+    "ridge",
+    "random_forest",
+    "gradient_boosting",
+    "paper_ridge_loglife",
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -41,30 +52,34 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         default=Path("data/processed/chueh_toyota_fast_charge"),
     )
-    parser.add_argument("--runs-dir", type=Path, default=Path("runs/chueh_toyota_phase1"))
+    parser.add_argument("--out-root", type=Path, default=Path("runs/chueh_toyota_phase1"))
+    parser.add_argument("--runs-dir", type=Path, default=None, help=argparse.SUPPRESS)
     parser.add_argument("--reports-dir", type=Path, default=Path("reports"))
     parser.add_argument("--max-cycle", type=int, default=100)
     parser.add_argument("--first-n-cycles", type=int, default=100)
     parser.add_argument(
         "--max-cells-per-batch",
         type=int,
-        default=4,
-        help="Reviewer-smoke default. Use 0 to process every cell in each batch.",
+        default=None,
+        help="Cell cap per raw ZIP. Omit or use 0 for uncapped full mode.",
     )
+    parser.add_argument("--smoke", action="store_true", help="Write smoke/capped report names.")
+    parser.add_argument("--skip-preprocess", action="store_true")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--leave-one-batch-id", type=str, default=None)
-    parser.add_argument("--model-kinds", nargs="+", default=list(SUPPORTED_MODEL_KINDS))
+    parser.add_argument("--model-kinds", nargs="+", default=list(DEFAULT_MODEL_KINDS))
     parser.add_argument("--split-modes", nargs="+", default=list(DEFAULT_SPLIT_MODES))
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-    max_cells = args.max_cells_per_batch if args.max_cells_per_batch > 0 else None
+    max_cells = args.max_cells_per_batch if args.max_cells_per_batch and args.max_cells_per_batch > 0 else None
+    out_root = args.runs_dir or args.out_root
     rows = run_matrix(
         raw_dir=args.raw_dir,
         processed_dir=args.processed_dir,
-        runs_dir=args.runs_dir,
+        out_root=out_root,
         reports_dir=args.reports_dir,
         model_kinds=args.model_kinds,
         split_modes=args.split_modes,
@@ -73,6 +88,8 @@ def main() -> None:
         max_cells_per_batch=max_cells,
         seed=args.seed,
         leave_one_batch_id=args.leave_one_batch_id,
+        smoke=args.smoke,
+        skip_preprocess=args.skip_preprocess,
     )
     print(_markdown_table(pd.DataFrame(rows)))
 
@@ -81,7 +98,7 @@ def run_matrix(
     *,
     raw_dir: Path,
     processed_dir: Path,
-    runs_dir: Path,
+    out_root: Path,
     reports_dir: Path,
     model_kinds: list[str],
     split_modes: list[str],
@@ -90,27 +107,71 @@ def run_matrix(
     max_cells_per_batch: int | None,
     seed: int,
     leave_one_batch_id: str | None = None,
+    smoke: bool = False,
+    skip_preprocess: bool = False,
 ) -> list[dict[str, Any]]:
     """Preprocess raw data once, then run the requested split/model matrix."""
 
     processed_dir = ensure_dir(processed_dir)
-    runs_dir = ensure_dir(runs_dir)
+    out_root = ensure_dir(out_root)
     reports_dir = ensure_dir(reports_dir)
 
-    loaded = load_raw_batches(
-        raw_dir,
-        max_cells_per_batch=max_cells_per_batch,
+    if smoke and max_cells_per_batch is None:
+        max_cells_per_batch = 4
+    if skip_preprocess:
+        metadata_path = processed_dir / "cell_metadata.csv"
+        cycle_path = processed_dir / "cycle_summary.csv"
+        if not metadata_path.exists() or not cycle_path.exists():
+            raise FileNotFoundError(
+                f"--skip-preprocess requested but missing {metadata_path} or {cycle_path}"
+            )
+        metadata = pd.read_csv(metadata_path)
+        cycle_summary = pd.read_csv(cycle_path)
+        parse_errors: list[str] = []
+        parse_errors_unavailable = True
+    else:
+        loaded = load_raw_batches(
+            raw_dir,
+            max_cells_per_batch=max_cells_per_batch,
+            first_n_cycles=first_n_cycles,
+        )
+        metadata = loaded.metadata
+        cycle_summary = loaded.cycle_summary
+        parse_errors = loaded.parse_errors
+        parse_errors_unavailable = False
+        metadata.to_csv(processed_dir / "cell_metadata.csv", index=False)
+        cycle_summary.to_csv(processed_dir / "cycle_summary.csv", index=False)
+
+    validate_processed_tables(metadata, cycle_summary, require_labels=False)
+    write_json(processed_dir / "qc_summary.json", qc_summary(metadata, cycle_summary))
+    coverage_suffix = "_smoke" if smoke else ""
+    write_dataset_coverage_reports(
+        metadata=metadata,
+        cycle_summary=cycle_summary,
+        reports_dir=reports_dir,
+        raw_dir=raw_dir,
         first_n_cycles=first_n_cycles,
+        max_cells_per_batch=max_cells_per_batch,
+        smoke=smoke,
+        parse_errors=parse_errors,
+        parse_errors_unavailable=parse_errors_unavailable,
+        suffix=coverage_suffix,
     )
-    validate_processed_tables(loaded.metadata, loaded.cycle_summary, require_labels=False)
-    loaded.metadata.to_csv(processed_dir / "cell_metadata.csv", index=False)
-    loaded.cycle_summary.to_csv(processed_dir / "cycle_summary.csv", index=False)
-    write_json(processed_dir / "qc_summary.json", qc_summary(loaded.metadata, loaded.cycle_summary))
+    coverage_summary = dataset_coverage_summary(
+        metadata=metadata,
+        cycle_summary=cycle_summary,
+        raw_dir=raw_dir,
+        first_n_cycles=first_n_cycles,
+        max_cells_per_batch=max_cells_per_batch,
+        smoke=smoke,
+        parse_errors=parse_errors,
+        parse_errors_unavailable=parse_errors_unavailable,
+    )
 
     rows: list[dict[str, Any]] = []
     for split_mode in split_modes:
         split_result = _make_split_for_matrix(
-            loaded.metadata,
+            metadata,
             split_mode=split_mode,
             seed=seed,
             leave_one_batch_id=leave_one_batch_id,
@@ -122,7 +183,7 @@ def run_matrix(
                         split_mode=split_mode,
                         model_kind=model_kind,
                         status="failed",
-                        output_dir=runs_dir / f"{split_mode}_{model_kind}",
+                        output_dir=out_root / f"{split_mode}_{model_kind}",
                         failure_reason=split_result,
                     )
                 )
@@ -133,15 +194,15 @@ def run_matrix(
         splits.to_csv(split_path, index=False)
         write_json(
             processed_dir / f"qc_summary_{split_mode}.json",
-            qc_summary(loaded.metadata, loaded.cycle_summary, splits),
+            qc_summary(metadata, cycle_summary, splits),
         )
-        counts = _split_counts_for_labeled_cells(loaded.metadata, splits)
+        counts = _split_counts_for_labeled_cells(metadata, splits)
         for model_kind in model_kinds:
-            output_dir = runs_dir / f"{split_mode}_{model_kind}"
+            output_dir = out_root / f"{split_mode}_{model_kind}"
             try:
                 metrics = _run_baseline(
-                    metadata=loaded.metadata,
-                    cycle_summary=loaded.cycle_summary,
+                    metadata=metadata,
+                    cycle_summary=cycle_summary,
                     splits=splits,
                     output_dir=output_dir,
                     model_kind=model_kind,
@@ -172,11 +233,17 @@ def run_matrix(
                 )
 
     summary = pd.DataFrame(rows)
-    summary.to_csv(reports_dir / "real_data_baseline_matrix.csv", index=False)
-    (reports_dir / "real_data_baseline_matrix.md").write_text(
+    report_stem = "real_data_baseline_matrix_smoke" if smoke else "real_data_baseline_matrix"
+    summary.to_csv(reports_dir / f"{report_stem}.csv", index=False)
+    min_test = _minimum_successful_test_count(summary)
+    warnings = coverage_warnings(coverage_summary, min_test=min_test)
+    (reports_dir / f"{report_stem}.md").write_text(
         "# Real Data Baseline Matrix\n\n"
+        f"Run mode: **{'smoke/capped' if smoke else 'full/uncapped'}**\n\n"
         "This table is generated by `scripts/run_real_data_baseline_matrix.py`. "
-        "Metrics are test-split metrics where a test split exists.\n\n"
+        "Metrics are test-split metrics where a test split exists. "
+        "One-test-cell metrics are smoke-test-only and are not scientific evidence.\n\n"
+        + _warnings_markdown(warnings)
         + _markdown_table(summary)
         + "\n",
     )
@@ -303,10 +370,15 @@ def _run_baseline(
             "model": trained.model,
             "feature_columns": trained.feature_columns,
             "model_kind": trained.model_kind,
+            "target_transform": trained.target_transform,
         },
         output_dir / "model.joblib",
     )
     write_json(output_dir / "feature_columns.json", {"feature_columns": trained.feature_columns})
+    write_json(
+        output_dir / "feature_columns_dropped.json",
+        {"dropped_feature_columns": trained.dropped_feature_columns or []},
+    )
     write_json(output_dir / "metrics.json", metrics_by_split)
     if log_metrics_by_split:
         write_json(output_dir / "log_metrics.json", log_metrics_by_split)
@@ -324,6 +396,7 @@ def _run_baseline(
             "split_counts": labeled["split"].value_counts().astype(int).to_dict(),
             "intended_use": "phase-1 real-data baseline matrix; not a scientific claim",
             "data_warning": "raw MatR data are manually downloaded and not committed",
+            "dropped_feature_columns": trained.dropped_feature_columns or [],
         },
     )
     return metrics_by_split
@@ -376,6 +449,22 @@ def _summary_row(
         "output_dir": str(output_dir),
         "failure_reason": failure_reason,
     }
+
+
+def _minimum_successful_test_count(summary: pd.DataFrame) -> int | None:
+    ok = summary.loc[summary["status"] == "ok"].copy()
+    if ok.empty or "n_test" not in ok:
+        return None
+    values = pd.to_numeric(ok["n_test"], errors="coerce").dropna()
+    if values.empty:
+        return None
+    return int(values.min())
+
+
+def _warnings_markdown(warnings: list[str]) -> str:
+    if not warnings:
+        return ""
+    return "## Warnings\n\n" + "\n".join(f"- {warning}" for warning in warnings) + "\n\n"
 
 
 def _markdown_table(df: pd.DataFrame) -> str:

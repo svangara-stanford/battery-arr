@@ -21,6 +21,7 @@ NON_FEATURE_COLUMNS = {
     "protocol_readable",
     "batch_id",
     "paper_curve_features_available",
+    "paper_missing_curve_feature_reason",
 }
 LOG_LIFE_MODEL_KINDS = ("paper_ridge_loglife", "paper_linear_loglife")
 SUPPORTED_MODEL_KINDS = (
@@ -40,19 +41,24 @@ class TrainedBaseline:
     feature_columns: list[str]
     model_kind: str
     target_transform: str = "identity"
+    dropped_feature_columns: list[str] | None = None
 
 
 def select_feature_columns(features: pd.DataFrame) -> list[str]:
     """Select numeric feature columns, excluding IDs, labels, and split metadata."""
 
     columns: list[str] = []
-    for col in features.columns:
-        if col in NON_FEATURE_COLUMNS:
-            continue
+    for col in _candidate_feature_columns(features):
         values = pd.to_numeric(features[col], errors="coerce")
         if values.notna().any():
             columns.append(col)
     return columns
+
+
+def _candidate_feature_columns(features: pd.DataFrame) -> list[str]:
+    """Return columns that are intended as model inputs before missingness checks."""
+
+    return [col for col in features.columns if col not in NON_FEATURE_COLUMNS]
 
 
 def make_regressor(kind: str = "random_forest", *, seed: int = 42, **kwargs: Any) -> Pipeline:
@@ -110,12 +116,22 @@ def train_baseline(
     train_df = features[features[split_column] == "train"].copy()
     if train_df.empty:
         raise ValueError("no training rows found")
-    feature_columns = feature_columns or select_feature_columns(features)
-    if not feature_columns:
-        raise ValueError("no numeric feature columns found")
-    missing_features = set(feature_columns).difference(features.columns)
+    candidate_columns = feature_columns or _candidate_feature_columns(features)
+    if not candidate_columns:
+        raise ValueError("no candidate feature columns found")
+    missing_features = set(candidate_columns).difference(features.columns)
     if missing_features:
         raise ValueError(f"requested feature columns missing: {sorted(missing_features)}")
+    all_numeric = features[candidate_columns].apply(pd.to_numeric, errors="coerce")
+    train_numeric = train_df[candidate_columns].apply(pd.to_numeric, errors="coerce")
+    dropped_feature_columns = [
+        col
+        for col in candidate_columns
+        if not all_numeric[col].notna().any() or not train_numeric[col].notna().any()
+    ]
+    feature_columns = [col for col in candidate_columns if col not in dropped_feature_columns]
+    if not feature_columns:
+        raise ValueError("all candidate feature columns are missing in the training split")
     model = make_regressor(model_kind, seed=seed, **model_kwargs)
     X = train_df[feature_columns].apply(pd.to_numeric, errors="coerce")
     y = pd.to_numeric(train_df["cycle_life"], errors="coerce")
@@ -132,6 +148,7 @@ def train_baseline(
         feature_columns=feature_columns,
         model_kind=model_kind,
         target_transform=target_transform,
+        dropped_feature_columns=dropped_feature_columns,
     )
 
 
