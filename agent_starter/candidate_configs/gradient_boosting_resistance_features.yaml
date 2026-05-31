@@ -1,9 +1,0 @@
-name: gradient_boosting_resistance_features
-model_kind: gradient_boosting
-max_cycle: 100
-seed: 42
-feature_include_prefixes:
-  - qd_
-  - ir_
-  - charge_time_
-  - protocol_
